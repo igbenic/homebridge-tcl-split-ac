@@ -251,6 +251,10 @@ class TclHomeApi {
         windSpeed:          rep.windSpeed                                      ?? WIND.AUTO,
         targetTemperature:  rep.targetCelsiusDegree ?? rep.targetTemperature  ?? 22,
         currentTemperature: rep.currentTemperature                             ?? 22,
+        verticalSwitch:     rep.verticalSwitch                                 ?? 0,
+        horizontalSwitch:   rep.horizontalSwitch                               ?? 0,
+        verticalDirection:  rep.verticalDirection                              ?? 8,
+        horizontalDirection: rep.horizontalDirection                            ?? 8,
         minTemp:            rep.lowerTemperatureLimit                          ?? 16,
         maxTemp:            rep.upperTemperatureLimit                          ?? 31,
         isOnline:           true,
@@ -276,6 +280,8 @@ class TclHomeApi {
     return {
       powerSwitch: 0, workMode: MODE.COOL, windSpeed: WIND.AUTO,
       targetTemperature: 22, currentTemperature: 22,
+      verticalSwitch: 0, horizontalSwitch: 0,
+      verticalDirection: 8, horizontalDirection: 8,
       minTemp: 16, maxTemp: 31, isOnline: false, lastUpdated: Date.now(),
     };
   }
@@ -411,7 +417,9 @@ class TclAirConditioner {
       .setProps({ minValue: -50, maxValue: 100, minStep: 0.1 })
       .onGet(this.getCurrentTemp.bind(this));
 
-    this.thermo.getCharacteristic(C.TargetTemperature)
+    const targetTemp = this.thermo.getCharacteristic(C.TargetTemperature);
+    targetTemp.updateValue(22);
+    targetTemp
       .setProps({ minValue: 16, maxValue: 31, minStep: 1 })
       .onGet(this.getTargetTemp.bind(this))
       .onSet(this.setTargetTemp.bind(this));
@@ -421,7 +429,7 @@ class TclAirConditioner {
   }
 
   removeLegacyServices() {
-    const names = ['Sleep Mode', 'Fan Speed', 'Fan Mode', 'Cool Fan Speed', 'AC Fan', 'Fan Speed Control'];
+    const names = ['Sleep Mode', 'Fan Speed', 'Fan Mode', 'Cool Fan Speed', 'AC Fan'];
     for (const name of names) {
       const svc = this.accessory.getService(name);
       if (svc) {
@@ -429,18 +437,51 @@ class TclAirConditioner {
         this.log.info(`Removed legacy service: ${name}`);
       }
     }
+
+    const fanSvc = this.accessory.getService('Fan Speed Control');
+    if (fanSvc && this.hap.Service.Fanv2 && fanSvc.UUID !== this.hap.Service.Fanv2.UUID) {
+      this.accessory.removeService(fanSvc);
+      this.log.info('Removed legacy service: Fan Speed Control');
+    }
   }
 
   setupFanSpeedControl() {
     const C = this.hap.Characteristic;
+    this.usesFanv2 = Boolean(
+      this.hap.Service.Fanv2 &&
+      C.Active &&
+      C.CurrentFanState &&
+      C.TargetFanState &&
+      C.SwingMode
+    );
 
-    this.fanSvc = this.accessory.getService('Fan Speed Control')
-               || this.accessory.addService(this.hap.Service.Fan, 'Fan Speed Control', 'fanSpeedControl');
+    if (this.usesFanv2) {
+      this.fanSvc = this.accessory.getService('Fan Speed Control')
+                 || this.accessory.addService(this.hap.Service.Fanv2, 'Fan Speed Control', 'fanSpeedControl');
 
-    // On/Off mirrors the AC power state.
-    this.fanSvc.getCharacteristic(C.On)
-      .onGet(this.getFanActive.bind(this))
-      .onSet(this.setFanActive.bind(this));
+      this.fanSvc.getCharacteristic(C.Active)
+        .onGet(this.getFanActiveState.bind(this))
+        .onSet(this.setFanActive.bind(this));
+
+      this.fanSvc.getCharacteristic(C.CurrentFanState)
+        .onGet(this.getCurrentFanState.bind(this));
+
+      this.fanSvc.getCharacteristic(C.TargetFanState)
+        .onGet(this.getTargetFanState.bind(this))
+        .onSet(this.setTargetFanState.bind(this));
+
+      this.fanSvc.getCharacteristic(C.SwingMode)
+        .onGet(this.getSwingMode.bind(this))
+        .onSet(this.setSwingMode.bind(this));
+    } else {
+      this.fanSvc = this.accessory.getService('Fan Speed Control')
+                 || this.accessory.addService(this.hap.Service.Fan, 'Fan Speed Control', 'fanSpeedControl');
+
+      // On/Off mirrors the AC power state.
+      this.fanSvc.getCharacteristic(C.On)
+        .onGet(this.getFanActive.bind(this))
+        .onSet(this.setFanActive.bind(this));
+    }
 
     // Fan speed slider.
     // Uses 12.5% steps for eight positions starting at 0% (Auto).
@@ -502,12 +543,56 @@ class TclAirConditioner {
     } catch (e) { return false; }
   }
 
+  async getFanActiveState() {
+    try {
+      const s = await this.api.getDeviceState(this.device.deviceId);
+      return s.powerSwitch === 1
+        ? this.hap.Characteristic.Active.ACTIVE
+        : this.hap.Characteristic.Active.INACTIVE;
+    } catch (e) {
+      return this.hap.Characteristic.Active.INACTIVE;
+    }
+  }
+
+  async getCurrentFanState() {
+    try {
+      const s = await this.api.getDeviceState(this.device.deviceId);
+      return s.powerSwitch === 1
+        ? this.hap.Characteristic.CurrentFanState.BLOWING_AIR
+        : this.hap.Characteristic.CurrentFanState.INACTIVE;
+    } catch (e) {
+      return this.hap.Characteristic.CurrentFanState.INACTIVE;
+    }
+  }
+
+  async getTargetFanState() {
+    try {
+      const s = await this.api.getDeviceState(this.device.deviceId);
+      return s.windSpeed === WIND.AUTO
+        ? this.hap.Characteristic.TargetFanState.AUTO
+        : this.hap.Characteristic.TargetFanState.MANUAL;
+    } catch (e) {
+      return this.hap.Characteristic.TargetFanState.AUTO;
+    }
+  }
+
   async getFanSpeed() {
     try {
       const s = await this.api.getDeviceState(this.device.deviceId);
       if (!s.powerSwitch) return 0;
       return this.windToPercent(s.windSpeed);
     } catch (e) { return 0; }
+  }
+
+  async getSwingMode() {
+    try {
+      const s = await this.api.getDeviceState(this.device.deviceId);
+      return this.isSwingEnabled(s)
+        ? this.hap.Characteristic.SwingMode.SWING_ENABLED
+        : this.hap.Characteristic.SwingMode.SWING_DISABLED;
+    } catch (e) {
+      return this.hap.Characteristic.SwingMode.SWING_DISABLED;
+    }
   }
 
   // HomeKit setters.
@@ -619,8 +704,10 @@ class TclAirConditioner {
 
   // Power on/off through the Fan service.
   async setFanActive(value) {
-    this.log.info(`setFanActive -> ${value ? 'ON' : 'OFF'}`);
-    if (!value) {
+    const active = this.hap.Characteristic.Active;
+    const enabled = value === true || value === 1 || (active && value === active.ACTIVE);
+    this.log.info(`setFanActive -> ${enabled ? 'ON' : 'OFF'}`);
+    if (!enabled) {
       await this.sendWithRetry({ powerSwitch: 0 }, 'setFanActive:off');
     } else {
       const cur = await this.api.getDeviceState(this.device.deviceId, true);
@@ -631,6 +718,39 @@ class TclAirConditioner {
           windSpeed:   this._lastWindSpeed,
         }, 'setFanActive:on');
       }
+    }
+  }
+
+  async setTargetFanState(value) {
+    const C = this.hap.Characteristic;
+    const cur = await this.api.getDeviceState(this.device.deviceId, true);
+    const stateName = value === C.TargetFanState.AUTO ? 'AUTO' : 'MANUAL';
+    this.log.info(`setTargetFanState -> ${stateName}`);
+
+    if (value === C.TargetFanState.AUTO) {
+      this._lastWindSpeed = WIND.AUTO;
+      if (cur.powerSwitch) await this.sendWithRetry({ windSpeed: WIND.AUTO }, 'setTargetFanState:auto');
+      return;
+    }
+
+    if (cur.windSpeed === WIND.AUTO) {
+      const wind = this._lastWindSpeed && this._lastWindSpeed !== WIND.AUTO ? this._lastWindSpeed : WIND.MED;
+      this._lastWindSpeed = wind;
+      if (cur.powerSwitch) await this.sendWithRetry({ windSpeed: wind }, 'setTargetFanState:manual');
+    }
+  }
+
+  async setSwingMode(value) {
+    const C = this.hap.Characteristic;
+    const enabled = value === C.SwingMode.SWING_ENABLED;
+    const props = enabled
+      ? { verticalSwitch: 1 }
+      : { verticalSwitch: 0, horizontalSwitch: 0 };
+
+    this.log.info(`setSwingMode -> ${enabled ? 'ON' : 'OFF'}`);
+    const ok = await this.sendWithRetry(props, 'setSwingMode');
+    if (ok && this.usesFanv2) {
+      this.fanSvc.updateCharacteristic(C.SwingMode, value);
     }
   }
 
@@ -660,7 +780,7 @@ class TclAirConditioner {
 
   // Update HomeKit from the device state.
   updateFromState(s) {
-    const key = `${s.powerSwitch}-${s.workMode}-${s.windSpeed}-${s.currentTemperature}-${s.targetTemperature}`;
+    const key = `${s.powerSwitch}-${s.workMode}-${s.windSpeed}-${s.currentTemperature}-${s.targetTemperature}-${s.verticalSwitch}-${s.horizontalSwitch}`;
     if (key === this._lastStateKey) return;
 
     const major = !this._lastStateKey
@@ -704,14 +824,35 @@ class TclAirConditioner {
     this.thermo.updateCharacteristic(C.CurrentHeatingCoolingState, curMode);
     this.thermo.updateCharacteristic(C.TargetHeatingCoolingState,  tgtMode);
 
-    this.fanSvc.updateCharacteristic(C.On, s.powerSwitch === 1);
-    this.fanSvc.updateCharacteristic(
-      C.RotationSpeed,
-      s.powerSwitch ? this.windToPercent(s.windSpeed) : 0
-    );
+    const fanSpeed = s.powerSwitch ? this.windToPercent(s.windSpeed) : 0;
+    if (this.usesFanv2) {
+      this.fanSvc.updateCharacteristic(
+        C.Active,
+        s.powerSwitch === 1 ? C.Active.ACTIVE : C.Active.INACTIVE
+      );
+      this.fanSvc.updateCharacteristic(
+        C.CurrentFanState,
+        s.powerSwitch === 1 ? C.CurrentFanState.BLOWING_AIR : C.CurrentFanState.INACTIVE
+      );
+      this.fanSvc.updateCharacteristic(
+        C.TargetFanState,
+        s.windSpeed === WIND.AUTO ? C.TargetFanState.AUTO : C.TargetFanState.MANUAL
+      );
+      this.fanSvc.updateCharacteristic(
+        C.SwingMode,
+        this.isSwingEnabled(s) ? C.SwingMode.SWING_ENABLED : C.SwingMode.SWING_DISABLED
+      );
+    } else {
+      this.fanSvc.updateCharacteristic(C.On, s.powerSwitch === 1);
+    }
+    this.fanSvc.updateCharacteristic(C.RotationSpeed, fanSpeed);
   }
 
   // Helpers.
+
+  isSwingEnabled(state) {
+    return state.verticalSwitch === 1 || state.horizontalSwitch === 1;
+  }
 
   // Device workMode -> HomeKit mode.
   workModeToHk(workMode) {

@@ -25,7 +25,7 @@ This is a maintained fork of `askarkurymbayev/homebridge-tcl-split-ac`. It keeps
 
 ## HomeKit Mapping
 
-The plugin currently exposes the AC as a HomeKit `Thermostat` plus a separate `Fan` speed control.
+The plugin currently exposes the AC as a HomeKit `Thermostat` plus a separate `Fanv2` speed control.
 
 | TCL shadow field | HomeKit mapping | Status |
 |------------------|-----------------|--------|
@@ -33,9 +33,11 @@ The plugin currently exposes the AC as a HomeKit `Thermostat` plus a separate `F
 | `workMode` | Thermostat target mode: Off, Cool, Heat, Auto | Implemented |
 | `currentTemperature` | Thermostat current temperature | Implemented |
 | `targetCelsiusDegree` / `targetTemperature` | Thermostat target temperature | Implemented |
-| `windSpeed` | Fan rotation speed percentage | Implemented |
-| `verticalSwitch` / `horizontalSwitch` | Fan v2 or HeaterCooler swing mode | Available in shadow, not yet exposed |
+| `windSpeed` | Fanv2 rotation speed percentage and auto/manual fan state | Implemented |
+| `verticalSwitch` / `horizontalSwitch` | Fanv2 swing mode | Implemented |
 | `ECO`, `sleep`, `turbo`, `silenceSwitch` | Separate switches or scenes | Available in shadow, not yet exposed |
+
+HomeKit exposes swing as a single on/off value. This fork maps swing-on to TCL vertical swing and maps swing-off to both vertical and horizontal swing off.
 
 ## Requirements
 
