@@ -515,8 +515,13 @@ class TclAirConditioner {
   // The only place where HomeKit mode changes are mapped to workMode.
   async setTargetMode(value) {
     const C = this.hap.Characteristic;
-    const modeNames = ['OFF', 'COOL', 'HEAT', 'AUTO'];
-    this.log.info(`setTargetMode -> ${modeNames[value]}`);
+    const modeNames = {
+      [C.TargetHeatingCoolingState.OFF]: 'OFF',
+      [C.TargetHeatingCoolingState.HEAT]: 'HEAT',
+      [C.TargetHeatingCoolingState.COOL]: 'COOL',
+      [C.TargetHeatingCoolingState.AUTO]: 'AUTO',
+    };
+    this.log.info(`setTargetMode -> ${modeNames[value] ?? value}`);
 
     const cur  = await this.api.getDeviceState(this.device.deviceId, true);
     const temp = cur.targetTemperature ?? 22;

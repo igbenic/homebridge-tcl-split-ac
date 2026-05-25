@@ -23,6 +23,20 @@ This is a maintained fork of `askarkurymbayev/homebridge-tcl-split-ac`. It keeps
 - Current temperature display
 - Siri and Apple Home app support through Homebridge
 
+## HomeKit Mapping
+
+The plugin currently exposes the AC as a HomeKit `Thermostat` plus a separate `Fan` speed control.
+
+| TCL shadow field | HomeKit mapping | Status |
+|------------------|-----------------|--------|
+| `powerSwitch` | Thermostat off/active and Fan on/off | Implemented |
+| `workMode` | Thermostat target mode: Off, Cool, Heat, Auto | Implemented |
+| `currentTemperature` | Thermostat current temperature | Implemented |
+| `targetCelsiusDegree` / `targetTemperature` | Thermostat target temperature | Implemented |
+| `windSpeed` | Fan rotation speed percentage | Implemented |
+| `verticalSwitch` / `horizontalSwitch` | Fan v2 or HeaterCooler swing mode | Available in shadow, not yet exposed |
+| `ECO`, `sleep`, `turbo`, `silenceSwitch` | Separate switches or scenes | Available in shadow, not yet exposed |
+
 ## Requirements
 
 - Homebridge
