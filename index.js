@@ -1,40 +1,38 @@
 const axios  = require('axios');
 const crypto = require('crypto');
 const jwt    = require('jsonwebtoken');
-const AWS    = require('aws-sdk');
+const {
+  IoTDataPlaneClient,
+  GetThingShadowCommand,
+  PublishCommand,
+} = require('@aws-sdk/client-iot-data-plane');
 
-// ─────────────────────────────────────────────
-// РЕАЛЬНЫЙ МАППИНГ workMode для TAC-BR12INV
-// Проверен через Device Shadow
-// ─────────────────────────────────────────────
+// TCL TAC-BR12INV workMode values observed through Device Shadow.
 const MODE = {
-  AUTO: 0,  // Авто
-  COOL: 1,  // Охлаждение
-  DRY:  2,  // Осушение
-  FAN:  3,  // Вентиляция
-  HEAT: 4,  // Обогрев
+  AUTO: 0,
+  COOL: 1,
+  DRY:  2,
+  FAN:  3,
+  HEAT: 4,
 };
 
-// windSpeed значения TAC-BR12INV
-// Проверено через Device Shadow при каждом режиме
+// TCL TAC-BR12INV windSpeed values observed through Device Shadow.
 const WIND = {
-  AUTO:     0,  // Авто
-  SILENT:   2,  // Бесшумный
-  LOW:      2,  // Низкая (совпадает с Бесшумный)
-  MED_LOW:  3,  // Ниже средней
-  MED:      4,  // Средняя
-  MED_HIGH: 5,  // Выше средней
-  HIGH:     6,  // Высокая
-  TURBO:    6,  // Turbo (совпадает с Высокая)
+  AUTO:     0,
+  SILENT:   2,
+  LOW:      2,
+  MED_LOW:  3,
+  MED:      4,
+  MED_HIGH: 5,
+  HIGH:     6,
+  TURBO:    6,
 };
 
 module.exports = (homebridge) => {
   homebridge.registerPlatform('homebridge-tcl-split-ac', 'TclHome', TclHomePlatform);
 };
 
-// ─────────────────────────────────────────────
-// ПЛАТФОРМА
-// ─────────────────────────────────────────────
+// Homebridge platform.
 class TclHomePlatform {
   constructor(log, config, api) {
     this.log = log;
@@ -43,7 +41,7 @@ class TclHomePlatform {
     this.accessories = [];
 
     if (!config || !config.username || !config.password) {
-      this.log.error('❌ Username and password are required in config');
+      this.log.error('Username and password are required in config');
       return;
     }
 
@@ -62,15 +60,15 @@ class TclHomePlatform {
 
   async discoverDevices() {
     try {
-      this.log.info('🔍 Discovering TCL devices...');
+      this.log.info('Discovering TCL devices...');
       await this.tclApi.initialize();
       const devices = await this.tclApi.getDevices();
-      this.log.info(`✅ Found ${devices.length} device(s)`);
+      this.log.info(`Found ${devices.length} device(s)`);
       for (const device of devices) {
         if (device.category === 'AC') this.addAccessory(device);
       }
     } catch (err) {
-      this.log.error('❌ discoverDevices:', err.message);
+      this.log.error('discoverDevices:', err.message);
     }
   }
 
@@ -92,9 +90,7 @@ class TclHomePlatform {
   }
 }
 
-// ─────────────────────────────────────────────
 // TCL API
-// ─────────────────────────────────────────────
 class TclHomeApi {
   constructor(config) {
     Object.assign(this, config);
@@ -114,13 +110,13 @@ class TclHomeApi {
   }
 
   async initialize() {
-    this.log.info('🔐 Authenticating...');
+    this.log.info('Authenticating...');
     await this.authenticate();
     await this.fetchCloudUrls();
     await this.refreshTokens();
     await this.fetchAwsCredentials();
     await this.setupIot();
-    this.log.info('✅ TCL API ready');
+    this.log.info('TCL API ready');
   }
 
   async authenticate() {
@@ -140,7 +136,7 @@ class TclHomeApi {
     if (resp.data.status !== 1) throw new Error('Auth failed: ' + resp.data.msg);
     this.authData  = resp.data;
     this.authRetry = 0;
-    this.log.info('✅ Authenticated');
+    this.log.info('Authenticated');
   }
 
   async fetchCloudUrls() {
@@ -173,7 +169,7 @@ class TclHomeApi {
   }
 
   async fetchAwsCredentials() {
-    const region  = this.cloudUrlsData.data.cloud_region;
+    const region  = this.getAwsRegion();
     const decoded = jwt.decode(this.refreshTokensData.data.cognitoToken);
     const resp    = await axios.post(
       `https://cognito-identity.${region}.amazonaws.com/`,
@@ -192,22 +188,22 @@ class TclHomeApi {
       },
     );
     this.awsCredentials = resp.data;
-    this.log.info('✅ AWS credentials OK');
+    this.log.info('AWS credentials OK');
   }
 
   async setupIot() {
-    const region = this.cloudUrlsData.data.cloud_region;
+    const region = this.getAwsRegion();
     const creds  = this.awsCredentials.Credentials;
-    AWS.config.update({
-      accessKeyId:     creds.AccessKeyId,
-      secretAccessKey: creds.SecretKey,
-      sessionToken:    creds.SessionToken,
+    this.iotData = new IoTDataPlaneClient({
       region,
-    });
-    this.iotData = new AWS.IotData({
       endpoint: `https://data-ats.iot.${region}.amazonaws.com`,
+      credentials: {
+        accessKeyId:     creds.AccessKeyId,
+        secretAccessKey: creds.SecretKey,
+        sessionToken:    creds.SessionToken,
+      },
     });
-    this.log.info('✅ AWS IoT ready');
+    this.log.info('AWS IoT ready');
   }
 
   async getDevices() {
@@ -244,11 +240,11 @@ class TclHomeApi {
     if (!this.iotData) return this.stateCache[deviceId] || this.defaultState();
 
     try {
-      const result = await this.iotData.getThingShadow({ thingName: deviceId }).promise();
-      const shadow = JSON.parse(result.payload.toString());
+      const result = await this.iotData.send(new GetThingShadowCommand({ thingName: deviceId }));
+      const shadow = JSON.parse(Buffer.from(result.payload).toString('utf8'));
       const rep    = shadow.state?.reported || {};
 
-      // Читаем ТОЛЬКО reported — desired может содержать устаревшие значения
+      // Only trust reported state; desired can contain stale values.
       const state = {
         powerSwitch:        rep.powerSwitch                                    ?? 0,
         workMode:           rep.workMode                                       ?? MODE.COOL,
@@ -261,12 +257,12 @@ class TclHomeApi {
         lastUpdated:        now,
       };
 
-      this.dbg(`📊 ${deviceId}: power=${state.powerSwitch} mode=${state.workMode} wind=${state.windSpeed} target=${state.targetTemperature}°C room=${state.currentTemperature}°C`);
+      this.dbg(`${deviceId}: power=${state.powerSwitch} mode=${state.workMode} wind=${state.windSpeed} target=${state.targetTemperature}C room=${state.currentTemperature}C`);
       this.stateCache[deviceId] = state;
       return state;
 
     } catch (err) {
-      this.dbg('⚠️ Shadow read failed:', err.message);
+      this.dbg('Shadow read failed:', err.message);
       const cached = this.stateCache[deviceId];
       if (cached && now - cached.lastUpdated > 30000) {
         delete this.stateCache[deviceId];
@@ -286,7 +282,7 @@ class TclHomeApi {
 
   async sendCommand(deviceId, props) {
     if (!this.iotData) {
-      this.log.error('❌ IoT not initialized');
+      this.log.error('IoT not initialized');
       return false;
     }
     const topic   = `$aws/things/${deviceId}/shadow/update`;
@@ -294,40 +290,44 @@ class TclHomeApi {
       state: { desired: props },
       clientToken: `hb_${Date.now()}`,
     });
-    this.log.info(`📡 → ${deviceId}:`, JSON.stringify(props));
+    this.log.info(`Command -> ${deviceId}:`, JSON.stringify(props));
     try {
-      await this.iotData.publish({ topic, payload, qos: 1 }).promise();
-      // Обновляем кэш оптимистично
+      await this.iotData.send(new PublishCommand({
+        topic,
+        payload: Buffer.from(payload),
+        qos: 1,
+      }));
+      // Update the cache optimistically.
       if (this.stateCache[deviceId]) {
         Object.assign(this.stateCache[deviceId], props);
         if (props.targetCelsiusDegree !== undefined) {
           this.stateCache[deviceId].targetTemperature = props.targetCelsiusDegree;
         }
       }
-      this.log.info('✅ Command sent');
+      this.log.info('Command sent');
       return true;
     } catch (err) {
       if (err.message.includes('Forbidden') || err.message.includes('expired')) {
-        this.log.warn('🔄 Credentials expired, re-authenticating...');
+        this.log.warn('Credentials expired, re-authenticating...');
         await this.reAuth();
         return false;
       }
-      this.log.error('❌ Publish failed:', err.message);
+      this.log.error('Publish failed:', err.message);
       return false;
     }
   }
 
   async reAuth() {
     if (this.authRetry >= this.maxAuthRetry) {
-      this.log.error('❌ Max re-auth attempts. Restart Homebridge.');
+      this.log.error('Max re-auth attempts. Restart Homebridge.');
       return;
     }
     this.authRetry++;
-    this.log.info(`🔄 Re-auth attempt ${this.authRetry}/${this.maxAuthRetry}`);
+    this.log.info(`Re-auth attempt ${this.authRetry}/${this.maxAuthRetry}`);
     try {
       await this.initialize();
     } catch (err) {
-      this.log.error('❌ Re-auth failed:', err.message);
+      this.log.error('Re-auth failed:', err.message);
     }
   }
 
@@ -337,11 +337,17 @@ class TclHomeApi {
       .map(b => ((b & 0xFF) < 16 ? '0' : '') + (b & 0xFF).toString(16))
       .join('');
   }
+
+  getAwsRegion() {
+    const region = this.cloudUrlsData?.data?.cloud_region;
+    if (typeof region !== 'string' || !/^[a-z]{2}(?:-[a-z0-9]+)+-\d+$/.test(region)) {
+      throw new Error(`Unexpected AWS region from TCL cloud: ${String(region)}`);
+    }
+    return region;
+  }
 }
 
-// ─────────────────────────────────────────────
-// КОНДИЦИОНЕР (HomeKit аксессуар)
-// ─────────────────────────────────────────────
+// HomeKit accessory.
 class TclAirConditioner {
   constructor(platform, accessory, device) {
     this.platform  = platform;
@@ -366,7 +372,7 @@ class TclAirConditioner {
     this.setupFanSpeedControl();
     this.startPolling();
 
-    this.log.info(`🏠 ${device.deviceName} ready (TAC-BR12INV | Cool/Heat/Auto | 16-31°C | 8 fan speeds)`);
+    this.log.info(`${device.deviceName} ready (TAC-BR12INV | Cool/Heat/Auto | 16-31C | 8 fan speeds)`);
   }
 
   setupAccessoryInfo() {
@@ -420,7 +426,7 @@ class TclAirConditioner {
       const svc = this.accessory.getService(name);
       if (svc) {
         this.accessory.removeService(svc);
-        this.log.info(`🗑️ Removed legacy service: ${name}`);
+        this.log.info(`Removed legacy service: ${name}`);
       }
     }
   }
@@ -431,30 +437,28 @@ class TclAirConditioner {
     this.fanSvc = this.accessory.getService('Fan Speed Control')
                || this.accessory.addService(this.hap.Service.Fan, 'Fan Speed Control', 'fanSpeedControl');
 
-    // On/Off отражает включён ли кондиционер
+    // On/Off mirrors the AC power state.
     this.fanSvc.getCharacteristic(C.On)
       .onGet(this.getFanActive.bind(this))
       .onSet(this.setFanActive.bind(this));
 
-    // Ползунок скорости
-    // Шаг 12.5% — 8 позиций начиная с 0% (Авто)
-    // 0%    → Авто        (windSpeed 0)
-    // 12.5% → Бесшумный   (windSpeed 2)
-    // 25%   → Низкая      (windSpeed 2)
-    // 37.5% → Ниже средней(windSpeed 3)
-    // 50%   → Средняя     (windSpeed 4)
-    // 62.5% → Выше средней(windSpeed 5)
-    // 75%   → Высокая     (windSpeed 6)
-    // 87.5-100% → Turbo   (windSpeed 6)
+    // Fan speed slider.
+    // Uses 12.5% steps for eight positions starting at 0% (Auto).
+    // 0%        -> Auto        (windSpeed 0)
+    // 12.5%     -> Silent      (windSpeed 2)
+    // 25%       -> Low         (windSpeed 2)
+    // 37.5%     -> Medium-low  (windSpeed 3)
+    // 50%       -> Medium      (windSpeed 4)
+    // 62.5%     -> Medium-high (windSpeed 5)
+    // 75%       -> High        (windSpeed 6)
+    // 87.5-100% -> Turbo       (windSpeed 6)
     this.fanSvc.getCharacteristic(C.RotationSpeed)
       .setProps({ minValue: 0, maxValue: 100, minStep: 12.5 })
       .onGet(this.getFanSpeed.bind(this))
       .onSet(this.setFanSpeed.bind(this));
   }
 
-  // ─────────────────────────────────────────────
-  // ГЕТТЕРЫ
-  // ─────────────────────────────────────────────
+  // HomeKit getters.
 
   async getCurrentMode() {
     try {
@@ -506,15 +510,13 @@ class TclAirConditioner {
     } catch (e) { return 0; }
   }
 
-  // ─────────────────────────────────────────────
-  // СЕТТЕРЫ
-  // ─────────────────────────────────────────────
+  // HomeKit setters.
 
-  // Единственное место где меняется workMode
+  // The only place where HomeKit mode changes are mapped to workMode.
   async setTargetMode(value) {
     const C = this.hap.Characteristic;
     const modeNames = ['OFF', 'COOL', 'HEAT', 'AUTO'];
-    this.log.info(`🎯 setTargetMode → ${modeNames[value]}`);
+    this.log.info(`setTargetMode -> ${modeNames[value]}`);
 
     const cur  = await this.api.getDeviceState(this.device.deviceId, true);
     const temp = cur.targetTemperature ?? 22;
@@ -564,25 +566,25 @@ class TclAirConditioner {
         break;
 
       default:
-        this.log.warn(`⚠️ Unknown HomeKit mode: ${value}`);
+        this.log.warn(`Unknown HomeKit mode: ${value}`);
         return;
     }
 
     await this.sendWithRetry(props, 'setTargetMode');
   }
 
-  // Меняет только температуру — режим не трогает
+  // Change only temperature; leave the current mode untouched.
   async setTargetTemp(value) {
     try {
       const temp = Math.max(this._minTemp, Math.min(this._maxTemp, Math.round(value)));
       const cur  = await this.api.getDeviceState(this.device.deviceId, true);
 
-      this.log.info(`🌡️ setTargetTemp → ${temp}°C (power=${cur.powerSwitch}, mode=${cur.workMode})`);
+      this.log.info(`setTargetTemp -> ${temp}C (power=${cur.powerSwitch}, mode=${cur.workMode})`);
 
       let props;
 
       if (!cur.powerSwitch) {
-        // Устройство выключено — включаем в последнем режиме
+        // Device is off; turn it on using the last known mode.
         props = {
           powerSwitch:         1,
           workMode:            this._lastMode,
@@ -591,7 +593,7 @@ class TclAirConditioner {
           targetTemperature:   temp,
         };
       } else {
-        // Только температура — режим не трогаем
+        // Only update temperature; do not touch the mode.
         props = {
           targetCelsiusDegree: temp,
           targetTemperature:   temp,
@@ -605,14 +607,14 @@ class TclAirConditioner {
           .updateValue(temp);
       }
     } catch (e) {
-      this.log.error('❌ setTargetTemp:', e.message);
+      this.log.error('setTargetTemp:', e.message);
       throw new this.hap.HapStatusError(this.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
     }
   }
 
-  // Вкл/выкл через Fan сервис
+  // Power on/off through the Fan service.
   async setFanActive(value) {
-    this.log.info(`💨 setFanActive → ${value ? 'ON' : 'OFF'}`);
+    this.log.info(`setFanActive -> ${value ? 'ON' : 'OFF'}`);
     if (!value) {
       await this.sendWithRetry({ powerSwitch: 0 }, 'setFanActive:off');
     } else {
@@ -627,33 +629,31 @@ class TclAirConditioner {
     }
   }
 
-  // Меняет ТОЛЬКО скорость — режим не трогает никогда
+  // Only change speed; never touch mode from the fan service.
   async setFanSpeed(value) {
     try {
       const wind = this.percentToWind(value);
       this._lastWindSpeed = wind;
 
       const cur = await this.api.getDeviceState(this.device.deviceId, true);
-      const windNames = { 0:'Авто', 2:'Бесшумный/Низкая', 3:'Ниже средней', 4:'Средняя', 5:'Выше средней', 6:'Высокая/Turbo' };
-      this.log.info(`💨 setFanSpeed → ${value}% → windSpeed=${wind} (${windNames[wind]}) | power=${cur.powerSwitch} mode=${cur.workMode}`);
+      const windNames = { 0:'Auto', 2:'Silent/Low', 3:'Medium-low', 4:'Medium', 5:'Medium-high', 6:'High/Turbo' };
+      this.log.info(`setFanSpeed -> ${value}% -> windSpeed=${wind} (${windNames[wind]}) | power=${cur.powerSwitch} mode=${cur.workMode}`);
 
       if (!cur.powerSwitch) {
-        // Устройство выключено — запоминаем скорость, не включаем
-        this.log.info('💨 Device is off, speed saved for next start');
+        // Device is off; remember the speed without powering on.
+        this.log.info('Device is off, speed saved for next start');
         return;
       }
 
-      // Отправляем ТОЛЬКО windSpeed — режим не трогаем!
+      // Send only windSpeed; do not touch the mode.
       await this.sendWithRetry({ windSpeed: wind }, 'setFanSpeed');
     } catch (e) {
-      this.log.error('❌ setFanSpeed:', e.message);
+      this.log.error('setFanSpeed:', e.message);
       throw new this.hap.HapStatusError(this.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
     }
   }
 
-  // ─────────────────────────────────────────────
-  // ОБНОВЛЕНИЕ HOMEKIT ИЗ СОСТОЯНИЯ УСТРОЙСТВА
-  // ─────────────────────────────────────────────
+  // Update HomeKit from the device state.
   updateFromState(s) {
     const key = `${s.powerSwitch}-${s.workMode}-${s.windSpeed}-${s.currentTemperature}-${s.targetTemperature}`;
     if (key === this._lastStateKey) return;
@@ -668,10 +668,10 @@ class TclAirConditioner {
     this._lastHkUpdate = Date.now();
 
     if (major) {
-      this.log.info(`📈 power=${s.powerSwitch} mode=${s.workMode} wind=${s.windSpeed} room=${s.currentTemperature}°C target=${s.targetTemperature}°C`);
+      this.log.info(`power=${s.powerSwitch} mode=${s.workMode} wind=${s.windSpeed} room=${s.currentTemperature}C target=${s.targetTemperature}C`);
     }
 
-    // Обновляем внутренние переменные
+    // Update internal state.
     if (s.powerSwitch && s.workMode !== undefined) this._lastMode      = s.workMode;
     if (s.windSpeed   !== undefined)               this._lastWindSpeed = s.windSpeed;
     if (s.minTemp)                                 this._minTemp       = s.minTemp;
@@ -706,55 +706,53 @@ class TclAirConditioner {
     );
   }
 
-  // ─────────────────────────────────────────────
-  // ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-  // ─────────────────────────────────────────────
+  // Helpers.
 
-  // workMode устройства → HomeKit режим
+  // Device workMode -> HomeKit mode.
   workModeToHk(workMode) {
     const C = this.hap.Characteristic;
     switch (workMode) {
-      case MODE.COOL: return C.TargetHeatingCoolingState.COOL;  // 1 → COOL
-      case MODE.HEAT: return C.TargetHeatingCoolingState.HEAT;  // 4 → HEAT
-      case MODE.AUTO: return C.TargetHeatingCoolingState.AUTO;  // 0 → AUTO
-      case MODE.DRY:  return C.TargetHeatingCoolingState.COOL;  // 2 → COOL (ближайший)
-      case MODE.FAN:  return C.TargetHeatingCoolingState.AUTO;  // 3 → AUTO (ближайший)
+      case MODE.COOL: return C.TargetHeatingCoolingState.COOL;  // 1 -> COOL
+      case MODE.HEAT: return C.TargetHeatingCoolingState.HEAT;  // 4 -> HEAT
+      case MODE.AUTO: return C.TargetHeatingCoolingState.AUTO;  // 0 -> AUTO
+      case MODE.DRY:  return C.TargetHeatingCoolingState.COOL;  // 2 -> closest HomeKit mode
+      case MODE.FAN:  return C.TargetHeatingCoolingState.AUTO;  // 3 -> closest HomeKit mode
       default:        return C.TargetHeatingCoolingState.OFF;
     }
   }
 
-  // windSpeed устройства → % для HomeKit
-  // 0%    → Авто          (windSpeed 0)
-  // 12.5% → Бесшумный     (windSpeed 2)
-  // 25%   → Низкая        (windSpeed 2)
-  // 37.5% → Ниже средней  (windSpeed 3)
-  // 50%   → Средняя       (windSpeed 4)
-  // 62.5% → Выше средней  (windSpeed 5)
-  // 75%   → Высокая       (windSpeed 6)
-  // 87.5% → Turbo         (windSpeed 6)
+  // Device windSpeed -> HomeKit percentage.
+  // 0%    -> Auto        (windSpeed 0)
+  // 12.5% -> Silent      (windSpeed 2)
+  // 25%   -> Low         (windSpeed 2)
+  // 37.5% -> Medium-low  (windSpeed 3)
+  // 50%   -> Medium      (windSpeed 4)
+  // 62.5% -> Medium-high (windSpeed 5)
+  // 75%   -> High        (windSpeed 6)
+  // 87.5% -> Turbo       (windSpeed 6)
   windToPercent(wind) {
     switch (wind) {
-      case 0: return 0;     // Авто
-      case 2: return 12.5;  // Бесшумный / Низкая
-      case 3: return 37.5;  // Ниже средней
-      case 4: return 50;    // Средняя
-      case 5: return 62.5;  // Выше средней
-      case 6: return 87.5;  // Высокая / Turbo
+      case 0: return 0;     // Auto
+      case 2: return 12.5;  // Silent / Low
+      case 3: return 37.5;  // Medium-low
+      case 4: return 50;    // Medium
+      case 5: return 62.5;  // Medium-high
+      case 6: return 87.5;  // High / Turbo
       default: return 0;
     }
   }
 
-  // % из HomeKit → windSpeed устройства
+  // HomeKit percentage -> device windSpeed.
   percentToWind(pct) {
-    if (pct <= 0)    return 0;  // Авто
-    if (pct <= 25)   return 2;  // Бесшумный / Низкая
-    if (pct <= 37.5) return 3;  // Ниже средней
-    if (pct <= 50)   return 4;  // Средняя
-    if (pct <= 62.5) return 5;  // Выше средней
-    return 6;                    // Высокая / Turbo
+    if (pct <= 0)    return 0;  // Auto
+    if (pct <= 25)   return 2;  // Silent / Low
+    if (pct <= 37.5) return 3;  // Medium-low
+    if (pct <= 50)   return 4;  // Medium
+    if (pct <= 62.5) return 5;  // Medium-high
+    return 6;                    // High / Turbo
   }
 
-  // Отправка команды с повторными попытками
+  // Send a command with retries.
   async sendWithRetry(props, ctx) {
     for (let i = 1; i <= 3; i++) {
       const ok = await this.api.sendCommand(this.device.deviceId, props);
@@ -767,16 +765,14 @@ class TclAirConditioner {
         }, 2000);
         return true;
       }
-      this.log.warn(`⚠️ ${ctx} attempt ${i}/3 failed`);
+      this.log.warn(`${ctx} attempt ${i}/3 failed`);
       if (i < 3) await new Promise(r => setTimeout(r, 2000 * i));
     }
-    this.log.error(`❌ ${ctx} failed after 3 attempts`);
+    this.log.error(`${ctx} failed after 3 attempts`);
     return false;
   }
 
-  // ─────────────────────────────────────────────
-  // ПОЛЛИНГ каждые 3 секунды
-  // ─────────────────────────────────────────────
+  // Poll every three seconds.
   startPolling() {
     setInterval(async () => {
       try {
@@ -793,19 +789,19 @@ class TclAirConditioner {
                        || err.message.includes('expired')
                        || err.message.includes('InvalidToken');
         if (isAuthErr || this._errCount >= 3) {
-          this.log.warn('🔄 Re-authenticating...');
+          this.log.warn('Re-authenticating...');
           await this.api.reAuth();
           this._errCount = 0;
         }
       }
     }, 3000);
 
-    // Инвалидация кэша каждые 45 сек
+    // Invalidate stale cache entries.
     setInterval(() => {
       const cached = this.api.stateCache[this.device.deviceId];
       if (cached && Date.now() - cached.lastUpdated > 45000) {
         delete this.api.stateCache[this.device.deviceId];
-        this.api.dbg('🗑️ Cache cleared');
+        this.api.dbg('Cache cleared');
       }
     }, 30000);
   }

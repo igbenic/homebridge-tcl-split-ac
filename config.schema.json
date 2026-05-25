@@ -4,6 +4,11 @@
   "singular": true,
   "schema": {
     "type": "object",
+    "required": [
+      "name",
+      "username",
+      "password"
+    ],
     "properties": {
       "name": {
         "title": "Name",
@@ -15,19 +20,20 @@
         "title": "TCL Home Email",
         "type": "string",
         "required": true,
-        "description": "Email от аккаунта TCL Home"
+        "description": "Email address for the TCL Home account"
       },
       "password": {
         "title": "TCL Home Password",
         "type": "string",
+        "format": "password",
         "required": true,
-        "description": "Пароль от аккаунта TCL Home"
+        "description": "Password for the TCL Home account"
       },
       "debugMode": {
         "title": "Debug Mode",
         "type": "boolean",
         "default": false,
-        "description": "Включить подробные логи"
+        "description": "Enable verbose Homebridge logs"
       }
     }
   }

@@ -1,8 +1,11 @@
 {
   "name": "homebridge-tcl-split-ac",
-  "version": "1.0.0",
-  "description": "Homebridge plugin for TCL TAC-BR12INV inverter split AC",
+  "version": "1.0.2",
+  "description": "Homebridge plugin for TCL TAC-BR12INV inverter split AC, maintained as a fork",
   "main": "index.js",
+  "scripts": {
+    "check": "node --check index.js"
+  },
   "keywords": [
     "homebridge-plugin",
     "tcl",
@@ -11,12 +14,12 @@
     "homekit"
   ],
   "engines": {
-    "node": ">=14.0.0",
+    "node": ">=20.0.0",
     "homebridge": ">=1.3.0"
   },
   "dependencies": {
+    "@aws-sdk/client-iot-data-plane": "^3.1053.0",
     "axios": "^1.6.0",
-    "aws-sdk": "^2.1499.0",
     "jsonwebtoken": "^9.0.0"
   },
   "peerDependencies": {
@@ -26,10 +29,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/askarkurymbayev/homebridge-tcl-split-ac"
+    "url": "git+https://github.com/igbenic/homebridge-tcl-split-ac.git"
   },
   "bugs": {
-    "url": "https://github.com/askarkurymbayev/homebridge-tcl-split-ac/issues"
+    "url": "https://github.com/igbenic/homebridge-tcl-split-ac/issues"
   },
-  "homepage": "https://github.com/askarkurymbayev/homebridge-tcl-split-ac#readme"
+  "homepage": "https://github.com/igbenic/homebridge-tcl-split-ac#readme"
 }
