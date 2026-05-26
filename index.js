@@ -230,7 +230,7 @@ class TclHomeApi {
     return resp.data.data || [];
   }
 
-  async getDeviceState(deviceId, force = false) {
+  async getDeviceState(deviceId, force = false, retryAuth = true) {
     const now = Date.now();
     if (!force && this.lastCall[deviceId] && now - this.lastCall[deviceId] < 200) {
       return this.stateCache[deviceId] || this.defaultState();
@@ -243,20 +243,23 @@ class TclHomeApi {
       const result = await this.iotData.send(new GetThingShadowCommand({ thingName: deviceId }));
       const shadow = JSON.parse(Buffer.from(result.payload).toString('utf8'));
       const rep    = shadow.state?.reported || {};
+      const cached = this.stateCache[deviceId];
 
       // Only trust reported state; desired can contain stale values.
+      // Preserve cached values when TCL returns a partial shadow so a bad read
+      // cannot overwrite HomeKit with the fallback 22C/off state.
       const state = {
-        powerSwitch:        rep.powerSwitch                                    ?? 0,
-        workMode:           rep.workMode                                       ?? MODE.COOL,
-        windSpeed:          rep.windSpeed                                      ?? WIND.AUTO,
-        targetTemperature:  rep.targetCelsiusDegree ?? rep.targetTemperature  ?? 22,
-        currentTemperature: rep.currentTemperature                             ?? 22,
-        verticalSwitch:     rep.verticalSwitch                                 ?? 0,
-        horizontalSwitch:   rep.horizontalSwitch                               ?? 0,
-        verticalDirection:  rep.verticalDirection                              ?? 8,
-        horizontalDirection: rep.horizontalDirection                            ?? 8,
-        minTemp:            rep.lowerTemperatureLimit                          ?? 16,
-        maxTemp:            rep.upperTemperatureLimit                          ?? 31,
+        powerSwitch:        rep.powerSwitch                                   ?? cached?.powerSwitch        ?? 0,
+        workMode:           rep.workMode                                      ?? cached?.workMode           ?? MODE.COOL,
+        windSpeed:          rep.windSpeed                                     ?? cached?.windSpeed          ?? WIND.AUTO,
+        targetTemperature:  rep.targetCelsiusDegree ?? rep.targetTemperature ?? cached?.targetTemperature  ?? 22,
+        currentTemperature: rep.currentTemperature                            ?? cached?.currentTemperature ?? 22,
+        verticalSwitch:     rep.verticalSwitch                                ?? cached?.verticalSwitch     ?? 0,
+        horizontalSwitch:   rep.horizontalSwitch                              ?? cached?.horizontalSwitch   ?? 0,
+        verticalDirection:  rep.verticalDirection                             ?? cached?.verticalDirection  ?? 8,
+        horizontalDirection: rep.horizontalDirection                           ?? cached?.horizontalDirection ?? 8,
+        minTemp:            rep.lowerTemperatureLimit                         ?? cached?.minTemp            ?? 16,
+        maxTemp:            rep.upperTemperatureLimit                         ?? cached?.maxTemp            ?? 31,
         isOnline:           true,
         lastUpdated:        now,
       };
@@ -268,11 +271,15 @@ class TclHomeApi {
     } catch (err) {
       this.dbg('Shadow read failed:', err.message);
       const cached = this.stateCache[deviceId];
-      if (cached && now - cached.lastUpdated > 30000) {
-        delete this.stateCache[deviceId];
-        return this.defaultState();
+
+      if (this.isAuthError(err) && retryAuth) {
+        this.log.warn('Shadow read credentials expired, re-authenticating...');
+        await this.reAuth();
+        return this.getDeviceState(deviceId, true, false);
       }
-      return cached || this.defaultState();
+
+      if (cached) return { ...cached, isOnline: false, lastErrorAt: now };
+      return this.defaultState();
     }
   }
 
@@ -313,7 +320,7 @@ class TclHomeApi {
       this.log.info('Command sent');
       return true;
     } catch (err) {
-      if (err.message.includes('Forbidden') || err.message.includes('expired')) {
+      if (this.isAuthError(err)) {
         this.log.warn('Credentials expired, re-authenticating...');
         await this.reAuth();
         return false;
@@ -335,6 +342,17 @@ class TclHomeApi {
     } catch (err) {
       this.log.error('Re-auth failed:', err.message);
     }
+  }
+
+  isAuthError(err) {
+    const text = [
+      err?.name,
+      err?.code,
+      err?.Code,
+      err?.message,
+    ].filter(Boolean).join(' ');
+
+    return /forbidden|expired|invalid.?token|credential|security token|access.?denied|unrecognizedclient/i.test(text);
   }
 
   md5(input) {
@@ -418,7 +436,6 @@ class TclAirConditioner {
       .onGet(this.getCurrentTemp.bind(this));
 
     const targetTemp = this.thermo.getCharacteristic(C.TargetTemperature);
-    targetTemp.updateValue(22);
     targetTemp
       .setProps({ minValue: 16, maxValue: 31, minStep: 1 })
       .onGet(this.getTargetTemp.bind(this))
@@ -925,8 +942,13 @@ class TclAirConditioner {
         const force = Date.now() - this._lastOkPoll > 10000;
         const s     = await this.api.getDeviceState(this.device.deviceId, force);
         if (s) {
-          this._errCount   = 0;
-          this._lastOkPoll = Date.now();
+          if (s.isOnline) {
+            this._errCount   = 0;
+            this._lastOkPoll = Date.now();
+          } else {
+            this._errCount++;
+            if (!this._lastStateKey) return;
+          }
           this.updateFromState(s);
         }
       } catch (err) {
