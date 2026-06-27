@@ -1,10 +1,11 @@
 {
   "name": "homebridge-tcl-split-ac",
-  "version": "1.1.1",
+  "version": "1.2.4",
   "description": "Homebridge plugin for TCL TAC-BR12INV inverter split AC, maintained as a fork",
   "main": "index.js",
   "scripts": {
-    "check": "node --check index.js"
+    "check": "node --check index.js && npm test",
+    "test": "node --test tests/**/*.test.js"
   },
   "keywords": [
     "homebridge-plugin",

@@ -18,26 +18,36 @@ This is a maintained fork of `askarkurymbayev/homebridge-tcl-split-ac`. It keeps
 
 - Power on/off
 - Set target temperature
-- Switch modes: Auto, Cool, Heat
-- Fan speed control
+- Switch thermostat modes: Auto, Cool, Heat
+- Switch TCL-only modes: Dry and Fan Only
+- Fan speed control with Auto/Manual fan state
+- Swing control
+- Eco, Sleep, Turbo, and Silence controls
 - Current temperature display
 - Siri and Apple Home app support through Homebridge
 
 ## HomeKit Mapping
 
-The plugin currently exposes the AC as a HomeKit `Thermostat` plus a separate `Fanv2` speed control.
+The plugin exposes the AC as a HomeKit `Thermostat`, a separate `Fanv2` speed control, and additional HomeKit `Switch` services for TCL features that HomeKit does not model directly.
 
 | TCL shadow field | HomeKit mapping | Status |
 |------------------|-----------------|--------|
 | `powerSwitch` | Thermostat off/active and Fan on/off | Implemented |
 | `workMode` | Thermostat target mode: Off, Cool, Heat, Auto | Implemented |
+| `workMode: 2` | Dry Mode switch | Implemented |
+| `workMode: 3` | Fan Only Mode switch | Implemented |
 | `currentTemperature` | Thermostat current temperature | Implemented |
 | `targetCelsiusDegree` / `targetTemperature` | Thermostat target temperature | Implemented |
 | `windSpeed` | Fanv2 rotation speed percentage and auto/manual fan state | Implemented |
 | `verticalSwitch` / `horizontalSwitch` | Fanv2 swing mode | Implemented |
-| `ECO`, `sleep`, `turbo`, `silenceSwitch` | Separate switches or scenes | Available in shadow, not yet exposed |
+| `ECO` | Eco Mode switch | Implemented |
+| `sleep` | Sleep Mode switch | Implemented |
+| `turbo` | Turbo Mode switch | Implemented |
+| `silenceSwitch` | Silence Mode switch | Implemented |
 
 HomeKit exposes swing as a single on/off value. This fork maps swing-on to TCL vertical swing and maps swing-off to both vertical and horizontal swing off.
+
+HomeKit does not have native Dry or Fan Only thermostat modes. This fork keeps the thermostat's standard Off/Cool/Heat/Auto mapping and exposes Dry Mode and Fan Only Mode as separate switches. Turning either switch on powers the AC and sets the matching TCL `workMode`; turning it off returns the AC to Cool only when that mode is currently active.
 
 ## Requirements
 

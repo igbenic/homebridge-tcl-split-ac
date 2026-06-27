@@ -28,9 +28,95 @@ const WIND = {
   TURBO:    6,
 };
 
-module.exports = (homebridge) => {
+const TCL_FEATURE_CONTROLS = [
+  { key: 'dryMode', name: 'Dry Mode', subtype: 'dryMode', mode: MODE.DRY },
+  { key: 'fanOnlyMode', name: 'Fan Only Mode', subtype: 'fanOnlyMode', mode: MODE.FAN },
+  { key: 'ecoMode', name: 'Eco Mode', subtype: 'ecoMode', field: 'ECO' },
+  { key: 'sleepMode', name: 'Sleep Mode', subtype: 'sleepMode', field: 'sleep' },
+  { key: 'turboMode', name: 'Turbo Mode', subtype: 'turboMode', field: 'turbo' },
+  { key: 'silenceMode', name: 'Silence Mode', subtype: 'silenceMode', field: 'silenceSwitch' },
+];
+
+function activeValue(value) {
+  return value === true || value === 1;
+}
+
+function featureControlIsActive(control, state) {
+  if (control.mode !== undefined) {
+    return state.powerSwitch === 1 && state.workMode === control.mode;
+  }
+
+  return activeValue(state[control.field]);
+}
+
+function featureControlCommand(control, enabled, state, fallbackWind = WIND.AUTO) {
+  if (control.field !== undefined) {
+    return { [control.field]: enabled ? 1 : 0 };
+  }
+
+  const temp = state.targetTemperature ?? 22;
+  const wind = state.windSpeed ?? fallbackWind;
+
+  if (enabled) {
+    return {
+      powerSwitch: 1,
+      workMode: control.mode,
+      windSpeed: wind,
+      targetCelsiusDegree: temp,
+      targetTemperature: temp,
+    };
+  }
+
+  if (state.powerSwitch === 1 && state.workMode === control.mode) {
+    return {
+      powerSwitch: 1,
+      workMode: MODE.COOL,
+      windSpeed: wind,
+      targetCelsiusDegree: temp,
+      targetTemperature: temp,
+    };
+  }
+
+  return undefined;
+}
+
+function windToPercent(wind) {
+  switch (wind) {
+    case 0: return 0;     // Auto
+    case 2: return 12.5;  // Silent / Low
+    case 3: return 37.5;  // Medium-low
+    case 4: return 50;    // Medium
+    case 5: return 62.5;  // Medium-high
+    case 6: return 87.5;  // High / Turbo
+    default: return 0;
+  }
+}
+
+function percentToWind(pct) {
+  if (pct <= 0)    return 0;  // Auto
+  if (pct <= 25)   return 2;  // Silent / Low
+  if (pct <= 37.5) return 3;  // Medium-low
+  if (pct <= 50)   return 4;  // Medium
+  if (pct <= 62.5) return 5;  // Medium-high
+  return 6;                    // High / Turbo
+}
+
+const plugin = (homebridge) => {
   homebridge.registerPlatform('homebridge-tcl-split-ac', 'TclHome', TclHomePlatform);
 };
+
+plugin._internals = {
+  MODE,
+  WIND,
+  TCL_FEATURE_CONTROLS,
+  activeValue,
+  featureControlIsActive,
+  featureControlCommand,
+  windToPercent,
+  percentToWind,
+};
+
+module.exports = plugin;
 
 // Homebridge platform.
 class TclHomePlatform {
@@ -258,6 +344,10 @@ class TclHomeApi {
         horizontalSwitch:   rep.horizontalSwitch                              ?? cached?.horizontalSwitch   ?? 0,
         verticalDirection:  rep.verticalDirection                             ?? cached?.verticalDirection  ?? 8,
         horizontalDirection: rep.horizontalDirection                           ?? cached?.horizontalDirection ?? 8,
+        ECO:                rep.ECO                                           ?? cached?.ECO                ?? 0,
+        sleep:              rep.sleep                                         ?? cached?.sleep              ?? 0,
+        turbo:              rep.turbo                                         ?? cached?.turbo              ?? 0,
+        silenceSwitch:      rep.silenceSwitch                                 ?? cached?.silenceSwitch      ?? 0,
         minTemp:            rep.lowerTemperatureLimit                         ?? cached?.minTemp            ?? 16,
         maxTemp:            rep.upperTemperatureLimit                         ?? cached?.maxTemp            ?? 31,
         isOnline:           true,
@@ -289,6 +379,7 @@ class TclHomeApi {
       targetTemperature: 22, currentTemperature: 22,
       verticalSwitch: 0, horizontalSwitch: 0,
       verticalDirection: 8, horizontalDirection: 8,
+      ECO: 0, sleep: 0, turbo: 0, silenceSwitch: 0,
       minTemp: 16, maxTemp: 31, isOnline: false, lastUpdated: Date.now(),
     };
   }
@@ -389,11 +480,13 @@ class TclAirConditioner {
     this._lastOkPoll    = Date.now();
     this._lastHkUpdate  = 0;
     this._lastStateKey  = '';
+    this.featureSwitchServices = new Map();
 
     this.setupAccessoryInfo();
     this.setupThermostat();
     this.removeLegacyServices();
     this.setupFanSpeedControl();
+    this.setupFeatureControls();
     this.startPolling();
 
     this.log.info(`${device.deviceName} ready (TAC-BR12INV | Cool/Heat/Auto | 16-31C | 8 fan speeds)`);
@@ -446,7 +539,7 @@ class TclAirConditioner {
   }
 
   removeLegacyServices() {
-    const names = ['Sleep Mode', 'Fan Speed', 'Fan Mode', 'Cool Fan Speed', 'AC Fan'];
+    const names = ['Fan Speed', 'Fan Mode', 'Cool Fan Speed', 'AC Fan'];
     for (const name of names) {
       const svc = this.accessory.getService(name);
       if (svc) {
@@ -514,6 +607,27 @@ class TclAirConditioner {
       .setProps({ minValue: 0, maxValue: 100, minStep: 12.5 })
       .onGet(this.getFanSpeed.bind(this))
       .onSet(this.setFanSpeed.bind(this));
+  }
+
+  setupFeatureControls() {
+    const C = this.hap.Characteristic;
+
+    for (const control of TCL_FEATURE_CONTROLS) {
+      let svc;
+      if (typeof this.accessory.getServiceById === 'function') {
+        svc = this.accessory.getServiceById(this.hap.Service.Switch, control.subtype);
+      }
+      svc = svc
+         || this.accessory.getService(control.name)
+         || this.accessory.addService(this.hap.Service.Switch, control.name, control.subtype);
+
+      svc.setCharacteristic(C.Name, control.name);
+      svc.getCharacteristic(C.On)
+        .onGet(() => this.getFeatureControlState(control))
+        .onSet(value => this.setFeatureControlState(control, value));
+
+      this.featureSwitchServices.set(control.key, svc);
+    }
   }
 
   // HomeKit getters.
@@ -609,6 +723,15 @@ class TclAirConditioner {
         : this.hap.Characteristic.SwingMode.SWING_DISABLED;
     } catch (e) {
       return this.hap.Characteristic.SwingMode.SWING_DISABLED;
+    }
+  }
+
+  async getFeatureControlState(control) {
+    try {
+      const s = await this.api.getDeviceState(this.device.deviceId);
+      return featureControlIsActive(control, s);
+    } catch (e) {
+      return false;
     }
   }
 
@@ -795,9 +918,34 @@ class TclAirConditioner {
     }
   }
 
+  async setFeatureControlState(control, value) {
+    try {
+      const enabled = activeValue(value);
+      this.log.info(`${control.name} -> ${enabled ? 'ON' : 'OFF'}`);
+
+      const cur = await this.api.getDeviceState(this.device.deviceId, true);
+      const props = featureControlCommand(control, enabled, cur, this._lastWindSpeed);
+
+      if (!props) {
+        const svc = this.featureSwitchServices.get(control.key);
+        if (svc) svc.updateCharacteristic(this.hap.Characteristic.On, false);
+        return;
+      }
+
+      const ok = await this.sendWithRetry(props, control.key);
+      if (ok) {
+        const svc = this.featureSwitchServices.get(control.key);
+        if (svc) svc.updateCharacteristic(this.hap.Characteristic.On, enabled);
+      }
+    } catch (e) {
+      this.log.error(`${control.name}:`, e.message);
+      throw new this.hap.HapStatusError(this.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+    }
+  }
+
   // Update HomeKit from the device state.
   updateFromState(s) {
-    const key = `${s.powerSwitch}-${s.workMode}-${s.windSpeed}-${s.currentTemperature}-${s.targetTemperature}-${s.verticalSwitch}-${s.horizontalSwitch}`;
+    const key = `${s.powerSwitch}-${s.workMode}-${s.windSpeed}-${s.currentTemperature}-${s.targetTemperature}-${s.verticalSwitch}-${s.horizontalSwitch}-${s.ECO}-${s.sleep}-${s.turbo}-${s.silenceSwitch}`;
     if (key === this._lastStateKey) return;
 
     const major = !this._lastStateKey
@@ -863,6 +1011,11 @@ class TclAirConditioner {
       this.fanSvc.updateCharacteristic(C.On, s.powerSwitch === 1);
     }
     this.fanSvc.updateCharacteristic(C.RotationSpeed, fanSpeed);
+
+    for (const control of TCL_FEATURE_CONTROLS) {
+      const svc = this.featureSwitchServices.get(control.key);
+      if (svc) svc.updateCharacteristic(C.On, featureControlIsActive(control, s));
+    }
   }
 
   // Helpers.
@@ -894,25 +1047,12 @@ class TclAirConditioner {
   // 75%   -> High        (windSpeed 6)
   // 87.5% -> Turbo       (windSpeed 6)
   windToPercent(wind) {
-    switch (wind) {
-      case 0: return 0;     // Auto
-      case 2: return 12.5;  // Silent / Low
-      case 3: return 37.5;  // Medium-low
-      case 4: return 50;    // Medium
-      case 5: return 62.5;  // Medium-high
-      case 6: return 87.5;  // High / Turbo
-      default: return 0;
-    }
+    return windToPercent(wind);
   }
 
   // HomeKit percentage -> device windSpeed.
   percentToWind(pct) {
-    if (pct <= 0)    return 0;  // Auto
-    if (pct <= 25)   return 2;  // Silent / Low
-    if (pct <= 37.5) return 3;  // Medium-low
-    if (pct <= 50)   return 4;  // Medium
-    if (pct <= 62.5) return 5;  // Medium-high
-    return 6;                    // High / Turbo
+    return percentToWind(pct);
   }
 
   // Send a command with retries.
