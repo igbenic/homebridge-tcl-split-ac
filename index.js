@@ -101,6 +101,17 @@ function percentToWind(pct) {
   return 6;                    // High / Turbo
 }
 
+function setServiceDisplayName(service, C, name) {
+  service.setCharacteristic(C.Name, name);
+
+  if (!C.ConfiguredName) return;
+
+  if (!service.testCharacteristic(C.ConfiguredName)) {
+    service.addOptionalCharacteristic(C.ConfiguredName);
+    service.setCharacteristic(C.ConfiguredName, name);
+  }
+}
+
 const plugin = (homebridge) => {
   homebridge.registerPlatform('homebridge-tcl-split-ac', 'TclHome', TclHomePlatform);
 };
@@ -112,6 +123,7 @@ plugin._internals = {
   activeValue,
   featureControlIsActive,
   featureControlCommand,
+  setServiceDisplayName,
   windToPercent,
   percentToWind,
 };
@@ -621,7 +633,7 @@ class TclAirConditioner {
          || this.accessory.getService(control.name)
          || this.accessory.addService(this.hap.Service.Switch, control.name, control.subtype);
 
-      svc.setCharacteristic(C.Name, control.name);
+      setServiceDisplayName(svc, C, control.name);
       svc.getCharacteristic(C.On)
         .onGet(() => this.getFeatureControlState(control))
         .onSet(value => this.setFeatureControlState(control, value));

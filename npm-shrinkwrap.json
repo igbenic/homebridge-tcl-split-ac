@@ -1,12 +1,12 @@
 {
   "name": "homebridge-tcl-split-ac",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
       "name": "homebridge-tcl-split-ac",
-      "version": "1.2.4",
+      "version": "1.2.5",
       "license": "MIT",
       "dependencies": {
         "@aws-sdk/client-iot-data-plane": "^3.1053.0",

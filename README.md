@@ -49,6 +49,8 @@ HomeKit exposes swing as a single on/off value. This fork maps swing-on to TCL v
 
 HomeKit does not have native Dry or Fan Only thermostat modes. This fork keeps the thermostat's standard Off/Cool/Heat/Auto mapping and exposes Dry Mode and Fan Only Mode as separate switches. Turning either switch on powers the AC and sets the matching TCL `workMode`; turning it off returns the AC to Cool only when that mode is currently active.
 
+The TCL feature switches set both `Name` and `ConfiguredName` so Apple Home can display each switch by its actual feature name instead of falling back to the accessory name.
+
 ## Requirements
 
 - Homebridge

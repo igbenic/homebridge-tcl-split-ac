@@ -9,6 +9,7 @@ const {
   TCL_FEATURE_CONTROLS,
   featureControlIsActive,
   featureControlCommand,
+  setServiceDisplayName,
   windToPercent,
   percentToWind,
 } = _internals;
@@ -88,4 +89,36 @@ test('boolean feature switches map directly to TCL shadow fields', () => {
   assert.deepEqual(featureControlCommand(control('ecoMode'), false, {}), { ECO: 0 });
   assert.equal(featureControlIsActive(control('ecoMode'), { ECO: 1 }), true);
   assert.equal(featureControlIsActive(control('ecoMode'), { ECO: 0 }), false);
+});
+
+test('service naming adds ConfiguredName for Apple Home display names', () => {
+  const calls = [];
+  const configuredNameValues = new Map();
+  const C = {
+    Name: 'Name',
+    ConfiguredName: 'ConfiguredName',
+  };
+  const service = {
+    testCharacteristic(characteristic) {
+      return configuredNameValues.has(characteristic);
+    },
+    addOptionalCharacteristic(characteristic) {
+      configuredNameValues.set(characteristic, '');
+      calls.push(['addOptionalCharacteristic', characteristic]);
+      return this;
+    },
+    setCharacteristic(characteristic, value) {
+      configuredNameValues.set(characteristic, value);
+      calls.push(['setCharacteristic', characteristic, value]);
+      return this;
+    },
+  };
+
+  setServiceDisplayName(service, C, 'Dry Mode');
+
+  assert.deepEqual(calls, [
+    ['setCharacteristic', 'Name', 'Dry Mode'],
+    ['addOptionalCharacteristic', 'ConfiguredName'],
+    ['setCharacteristic', 'ConfiguredName', 'Dry Mode'],
+  ]);
 });
